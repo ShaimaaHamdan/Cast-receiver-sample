@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LaLigaTv Cast</title>
+    <script type="text/javascript" src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js">
+    </script>
+    <style>
+        html {
+            height: 100%;
+        }
+
+        body {
+            overflow: hidden;
+            margin: 0px;
+            height: 100%;
+            background-color: #1b1e20;
+        }
+
+        video {
+            height: auto;
+            width: 100%;
+            text-align: center;
+            border: 0px solid silver;
+            display: table-cell;
+            vertical-align: middle;
+            color: #FFFFFF;
+            background-color: #000000;
+            font-weight: bold;
+            font-family: Verdana, Geneva, sans-serif;
+            font-size: 40px;
+            float: left;
+            z-index: 1;
+            position: absolute;
+            display: none;
+        }
+
+        #player {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="cast-player">
+        <cast-media-player></cast-media-player>
+    </div>
+    <div id="player" style="height: 100%;"></div>
+    <script>
+        var videoIds = null;
+        var player = null;
+        var numEnded = 0;
+        var numVideosInPlaylist = 0;
+        var tag = document.createElement('script');
+        tag.src = "https://www.youtube.com/iframe_api";
+        var firstScriptTag = document.getElementsByTagName('script')[0];
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+        function onYouTubeIframeAPIReady() {
+            console.log("onYouTubePlayerAPIReady");
+            player = new YT.Player('player', {
+                width: '100%',
+                events: {
+                    'onReady': onYouTubePlayerReady
+                }
+            });
+            player.addEventListener("onStateChange", function (event) {
+                console.log("onStateChange" + event.data);
+                if (event.data == 0) { // 0 == YT.PlayerState.ENDED
+                    ++numEnded;
+                    if (numEnded == numVideosInPlaylist) {
+                        document.getElementById("player").style.display = "none";
+                        numEnded = 0;
+                    }
+                }
+            });
+        }
+        function onYouTubePlayerReady(event) {
+            console.log("onYouTubePlayerReady");
+            if (videoIds != null) {
+                playVideos(videoIds);
+            }
+        }
+        function setUpYoutube(youtubeIds) {
+            playVideos(youtubeIds);
+            videoIds = youtubeIds;
+
+            document.getElementById("player").style.display = "initial";
+            document.getElementById("cast-player").style.display = "none";
+        }
+        function playVideos(youtubeIds) {
+            var ids = youtubeIds.split("&");
+            if (player != null) {
+                numVideosInPlaylist = ids.length;
+                player.loadPlaylist(ids);
+            }
+        }
+        function setDownYoutube() {
+            if (player != null && typeof player != "undefined" && typeof player.stopVideo != "undefined") {
+                player.stopVideo();
+            }
+            document.getElementById("player").style.display = "none";
+            document.getElementById("cast-player").style.display = "table-cell";
+        }
+    </script>
+    <script type="text/javascript">
+        'use strict';
+        var debugLog = [];
+        var stats = {
+            bitrate: 0,
+            state: "INIT",
+            currentMediaTime: 0
+        };
+        var drms = {};
+        var debugEnabled = true;
+
+        function initialize() {
+
+            log('[mediacast:init] - Initializing.');
+            const context = cast.framework.CastReceiverContext.getInstance();
+            const playerManager = context.getPlayerManager();
+
+            // TODO: Set debug level from sender.
+            cast.framework.CastReceiverContext.getInstance().setLoggerLevel(cast.framework.LoggerLevel.DEBUG);
+            // Set DRM contexts.
+            setDrms();
+            // Set player events and config.
+            setPlayerEvents(playerManager);
+            log('[mediacast:init] - Application is ready, starting system.');
+            const options = new cast.framework.CastReceiverOptions();
+            options.disableIdleTimeout = true;
+
+            context.start();
+
+        }
+
+        function setPlayerEvents(playerManager) {
+            // Load event.
+            playerManager.setMessageInterceptor(cast.framework.messages.MessageType.LOAD,
+                (loadRequestData) => {
+                    hideWelcomeScreen();
+                    log('[mediacast:setPlayerEvents] - playerManager.setMessageInterceptor:LOAD');
+                    log(JSON.stringify(loadRequestData.media));
+                    var contentType = loadRequestData.media.contentType;
+                    var url = loadRequestData.media.contentId;
+                    if (url.indexOf('http') < 0) {
+                        contentType = 'youtube';
+                    }
+                    if (/youtube/i.test(contentType)) {
+                        setUpYoutube(url);
+                        return false;
+                    }
+                    else {
+                        setDownYoutube();
+                        const licenseUrl = 'https://widevine-proxy.appspot.com/proxy';
+                        const drm = 'widevine';
+                        const ext = url.substring(url.lastIndexOf('.'), url.length);
+                        loadRequestData.media.contentType = 'video/mp4';
+                        if (ext.includes('mpd')) {
+                            loadRequestData.media.contentType = 'application/dash+xml';
+                        } else if (ext.includes('m3u8')) {
+                            loadRequestData.media.contentType = 'application/vnd.apple.mpegurl';
+                            // TODO: Create option to set hlsSegmentFormat option.
+                            loadRequestData.media.hlsSegmentFormat = cast.framework.messages.HlsSegmentFormat.TS;
+                        } else if (ext.includes('ism')) {
+                            loadRequestData.media.contentType = 'application/vnd.ms-sstr+xml';
+                        }
+
+                        playerManager.setMediaPlaybackInfoHandler((loadRequest, playbackConfig) => {
+                            playbackConfig.licenseUrl = licenseUrl;
+                            playbackConfig.protectionSystem = drms[drm];
+                            log('[mediacast:playbackConfig - ' + JSON.stringify(playbackConfig));
+                            return playbackConfig;
+                        });
+                        return loadRequestData;
+                    }
+                });
+
+            playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
+                log('[mediacast:events:PLAYER_LOAD_COMPLETE');
+                console.log(playerManager.getStats());
+                console.log(playerManager.getMediaInformation());
+            });
+
+            playerManager.addEventListener(cast.framework.events.EventType.BITRATE_CHANGED, (event) => {
+                log('[mediacast:events:BITRATE_CHANGED - ' + event.totalBitrate);
+                stats.bitrate = event.totalBitrate;
+                console.log(playerManager.getStats());
+            });
+
+            playerManager.addEventListener(cast.framework.events.EventType.PLAYING, (event) => {
+                log('[mediacast:events:PLAYING - ', JSON.stringify(event));
+            });
+
+            playerManager.addEventListener(cast.framework.events.EventType.PAUSE, (event) => {
+                log('[mediacast:events:PAUSE - ', JSON.stringify(event));
+            });
+
+            playerManager.addEventListener(cast.framework.events.EventType.SEEKING, (event) => {
+                log('[mediacast:events:SEEKING - ', JSON.stringify(event));
+            });
+
+            playerManager.addEventListener(cast.framework.events.EventType.BUFFERING, (event) => {
+                log('[mediacast:events:BUFFERING - ', JSON.stringify(event));
+            });
+
+            playerManager.addEventListener(cast.framework.events.EventType.TIME_UPDATE, (event) => {
+                // log('[mediacast:events:TIME_UPDATE - ', JSON.stringify(event));
+                stats.currentMediaTime = event.currentMediaTime;
+            });
+
+            playerManager.addEventListener(cast.framework.events.EventType.MEDIA_STATUS, (event) => {
+                log('[mediacast:events:MEDIA_STATUS - ', JSON.stringify(event));
+                stats.state = event.mediaStatus.playerState;
+            });
+        };
+        function setDrms() {
+            drms = {
+                widevine: cast.framework.ContentProtection.WIDEVINE,
+                playready: cast.framework.ContentProtection.PLAYREADY,
+            };
+        };
+
+        function log(...message) {
+            console.log(message.join(" "));
+            debugLog = debugLog.concat(message.join(" "));
+        };
+        initialize();
+    </script>
+</body>
+
+</html>
